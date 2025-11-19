@@ -15,14 +15,15 @@ LOGIN_BACK_URL_BASE64 = "aHR0cHM6Ly9kb21lbWVkYi5kb21lZ2dvb2suY29tL2luZGV4"
 
 # 검색 관련 설정
 SEARCH_URL_TEMPLATE = "https://domemedb.domeggook.com/index/item/supplyList.php?sf=subject&enc=utf8&fromOversea=0&mode=search&sw={keyword}"
+SEARCH_URL_TEMPLATE_WITH_PAGE = "https://domemedb.domeggook.com/index/item/supplyList.php?sf=subject&enc=utf8&fromOversea=0&mode=search&sw={keyword}&page={page}"
 
 # Selenium 설정
 DEFAULT_HEADLESS = True
 DEFAULT_TIMEOUT = 10
 PAGE_LOAD_TIMEOUT = 15
 
-# User-Agent 설정
-USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+# User-Agent 설정 (최신 Chrome 버전)
+USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
 
 # Chrome 옵션 설정
 CHROME_OPTIONS = [
@@ -81,6 +82,26 @@ SELECTORS = {
             "button.btn-search",
             "#searchBtn",
         ],
+        # 페이지네이션 관련
+        'pagination': {
+            'next_page': [
+                "a[onclick*='next']",
+                "a:contains('다음')",
+                ".pagination a.next",
+                "a.paging_next",
+                "a[href*='page=']",
+            ],
+            'page_numbers': [
+                ".pagination a",
+                ".paging a",
+                "a[href*='page=']",
+            ],
+            'current_page': [
+                ".pagination .active",
+                ".paging .current",
+                "a[class*='current']",
+            ],
+        },
     },
     # 상품 관련
     'product': {
@@ -122,4 +143,12 @@ RESULT_DIR = "result"
 # 기본 검색 설정
 DEFAULT_MAX_RESULTS = 20
 DEFAULT_MIN_PRICE = 12000
+
+# 쿠팡 쇼핑몰 URL
+COUPANG_SHOPPING_URL = "https://www.coupang.com"
+COUPANG_SEARCH_URL = "https://www.coupang.com/np/search?q={keyword}"
+
+# 네이버 쇼핑 URL
+NAVER_SHOPPING_URL = "https://shopping.naver.com"
+NAVER_SHOPPING_SEARCH_URL = "https://search.shopping.naver.com/search/all?query={keyword}"
 

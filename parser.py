@@ -86,6 +86,7 @@ def _find_product_containers(driver: WebDriver) -> List:
 def _parse_single_product(product, idx: int) -> Dict:
     """단일 상품 정보 파싱"""
     product_info = {}
+    product_info['source'] = 'domeggook'  # 소스 정보 추가
     
     # 상품번호 추출
     product_id = _extract_product_id(product)

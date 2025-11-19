@@ -12,7 +12,7 @@ from selenium.common.exceptions import TimeoutException, NoSuchElementException
 import time
 
 from config import (
-    BASE_URL, SEARCH_URL_TEMPLATE, SELECTORS, WAIT_TIMES,
+    BASE_URL, SEARCH_URL_TEMPLATE, SEARCH_URL_TEMPLATE_WITH_PAGE, SELECTORS, WAIT_TIMES,
     DEFAULT_TIMEOUT, PAGE_LOAD_TIMEOUT
 )
 from scraper import get_chrome_driver
@@ -29,7 +29,8 @@ def search_products(
     username: Optional[str] = None,
     password: Optional[str] = None,
     return_driver: bool = False,
-    driver: Optional[WebDriver] = None
+    driver: Optional[WebDriver] = None,
+    max_pages: Optional[int] = None
 ) -> List[Dict] | Tuple[List[Dict], WebDriver]:
     """
     도매꾹 사이트에서 상품 검색
@@ -67,11 +68,11 @@ def search_products(
         # 직접 URL 접근 방식
         if use_direct_url:
             return _search_with_direct_url(
-                driver, search_keyword, max_results, min_price, return_driver
+                driver, search_keyword, max_results, min_price, return_driver, max_pages
             )
         else:
             return _search_with_form(
-                driver, search_keyword, max_results, min_price, return_driver
+                driver, search_keyword, max_results, min_price, return_driver, max_pages
             )
             
     except Exception as e:
@@ -87,36 +88,88 @@ def _search_with_direct_url(
     search_keyword: str,
     max_results: Optional[int],
     min_price: Optional[int],
-    return_driver: bool
+    return_driver: bool,
+    max_pages: Optional[int] = None
 ) -> Union[List[Dict], Tuple[List[Dict], WebDriver], Tuple[List[Dict], None]]:
-    """직접 URL 접근 방식으로 검색"""
+    """직접 URL 접근 방식으로 검색 (페이지네이션 지원)"""
     try:
         logger.info(f"검색어 '{search_keyword}'로 직접 URL 접근...")
         encoded_keyword = quote(search_keyword, safe='')
-        search_url = SEARCH_URL_TEMPLATE.format(keyword=encoded_keyword)
         
-        driver.get(search_url)
-        logger.info(f"검색 URL로 직접 접근: {search_url}")
+        all_results = []
+        seen_product_ids = set()  # 중복 제거용
+        current_page = 1
+        max_pages_to_fetch = max_pages if max_pages else 1
         
-        # 페이지 로딩 대기
-        WebDriverWait(driver, DEFAULT_TIMEOUT).until(
-            EC.presence_of_element_located((By.TAG_NAME, "body"))
-        )
+        while current_page <= max_pages_to_fetch:
+            # 페이지 URL 생성
+            if current_page == 1:
+                search_url = SEARCH_URL_TEMPLATE.format(keyword=encoded_keyword)
+            else:
+                search_url = SEARCH_URL_TEMPLATE_WITH_PAGE.format(
+                    keyword=encoded_keyword, page=current_page
+                )
+            
+            logger.info(f"[페이지 {current_page}/{max_pages_to_fetch}] 검색 URL 접근: {search_url}")
+            driver.get(search_url)
+            
+            # 페이지 로딩 대기
+            WebDriverWait(driver, DEFAULT_TIMEOUT).until(
+                EC.presence_of_element_located((By.TAG_NAME, "body"))
+            )
+            
+            # 검색 결과 요소 로드 대기
+            _wait_for_search_results(driver)
+            
+            # 페이지 스크롤하여 동적 콘텐츠 로드
+            _scroll_page(driver)
+            time.sleep(WAIT_TIMES['page_load'])
+            
+            # 검색 결과 파싱
+            page_results = parse_search_results(driver, max_results=None, min_price=min_price)
+            
+            if not page_results:
+                logger.info(f"페이지 {current_page}에서 결과가 없습니다. 페이지네이션 종료.")
+                break
+            
+            # 중복 제거 및 결과 추가
+            new_results = []
+            for product in page_results:
+                product_id = product.get('product_id')
+                if product_id and product_id not in seen_product_ids:
+                    seen_product_ids.add(product_id)
+                    new_results.append(product)
+                elif not product_id:
+                    # product_id가 없으면 이름으로 중복 체크
+                    product_name = product.get('name', '')
+                    if product_name and product_name not in seen_product_ids:
+                        seen_product_ids.add(product_name)
+                        new_results.append(product)
+            
+            all_results.extend(new_results)
+            logger.info(f"페이지 {current_page}: {len(new_results)}개 상품 추가 (총 {len(all_results)}개)")
+            
+            # max_results 제한 확인
+            if max_results and len(all_results) >= max_results:
+                all_results = all_results[:max_results]
+                logger.info(f"최대 결과 수({max_results})에 도달했습니다.")
+                break
+            
+            # 다음 페이지가 있는지 확인
+            if not _has_next_page(driver):
+                logger.info("더 이상 페이지가 없습니다.")
+                break
+            
+            current_page += 1
+            
+            # 페이지 간 대기
+            time.sleep(WAIT_TIMES['page_load'])
         
-        # 검색 결과 요소 로드 대기
-        _wait_for_search_results(driver)
-        
-        # 페이지 스크롤하여 동적 콘텐츠 로드
-        _scroll_page(driver)
-        time.sleep(WAIT_TIMES['page_load'])
-        
-        # 검색 결과 파싱
-        results = parse_search_results(driver, max_results, min_price=min_price)
-        _log_search_complete(results, min_price)
+        _log_search_complete(all_results, min_price)
         
         if return_driver:
-            return results, driver
-        return results
+            return all_results, driver
+        return all_results
         
     except Exception as e:
         logger.error(f"직접 URL 접근 실패: {e}", exc_info=True)
@@ -129,7 +182,8 @@ def _search_with_form(
     search_keyword: str,
     max_results: Optional[int],
     min_price: Optional[int],
-    return_driver: bool
+    return_driver: bool,
+    max_pages: Optional[int] = None
 ) -> Union[List[Dict], Tuple[List[Dict], WebDriver], Tuple[List[Dict], None]]:
     """검색 폼 사용 방식으로 검색"""
     try:
@@ -167,13 +221,57 @@ def _search_with_form(
         _scroll_page(driver)
         time.sleep(WAIT_TIMES['page_load'])
         
-        # 검색 결과 파싱
-        results = parse_search_results(driver, max_results, min_price=min_price)
-        _log_search_complete(results, min_price)
+        # 첫 페이지 결과 파싱
+        all_results = []
+        seen_product_ids = set()
+        current_page = 1
+        max_pages_to_fetch = max_pages if max_pages else 1
+        
+        while current_page <= max_pages_to_fetch:
+            # 검색 결과 파싱
+            page_results = parse_search_results(driver, max_results=None, min_price=min_price)
+            
+            if not page_results:
+                logger.info(f"페이지 {current_page}에서 결과가 없습니다.")
+                break
+            
+            # 중복 제거 및 결과 추가
+            new_results = []
+            for product in page_results:
+                product_id = product.get('product_id')
+                if product_id and product_id not in seen_product_ids:
+                    seen_product_ids.add(product_id)
+                    new_results.append(product)
+                elif not product_id:
+                    product_name = product.get('name', '')
+                    if product_name and product_name not in seen_product_ids:
+                        seen_product_ids.add(product_name)
+                        new_results.append(product)
+            
+            all_results.extend(new_results)
+            logger.info(f"페이지 {current_page}: {len(new_results)}개 상품 추가 (총 {len(all_results)}개)")
+            
+            # max_results 제한 확인
+            if max_results and len(all_results) >= max_results:
+                all_results = all_results[:max_results]
+                logger.info(f"최대 결과 수({max_results})에 도달했습니다.")
+                break
+            
+            # 다음 페이지로 이동 시도
+            if current_page < max_pages_to_fetch:
+                if not _navigate_to_next_page(driver):
+                    logger.info("더 이상 페이지가 없습니다.")
+                    break
+                current_page += 1
+                time.sleep(WAIT_TIMES['page_load'])
+            else:
+                break
+        
+        _log_search_complete(all_results, min_price)
         
         if return_driver:
-            return results, driver
-        return results
+            return all_results, driver
+        return all_results
         
     except Exception as e:
         logger.error(f"검색 실패: {e}", exc_info=True)
@@ -265,6 +363,96 @@ def _scroll_page(driver: WebDriver) -> None:
         time.sleep(WAIT_TIMES['scroll'])
     except:
         pass
+
+def _has_next_page(driver: WebDriver) -> bool:
+    """다음 페이지가 있는지 확인 (URL 파라미터 방식)"""
+    try:
+        # 현재 URL에서 페이지 번호 추출
+        current_url = driver.current_url
+        if 'page=' in current_url:
+            # 이미 페이지 파라미터가 있으면 다음 페이지 URL 생성 가능
+            return True
+        
+        # 다음 페이지 버튼이 있는지 확인
+        from utils import find_element_by_selectors
+        next_button = find_element_by_selectors(
+            driver, SELECTORS['search']['pagination']['next_page']
+        )
+        return next_button is not None
+    except:
+        return False
+
+def _navigate_to_next_page(driver: WebDriver) -> bool:
+    """다음 페이지로 이동 (버튼 클릭 방식)"""
+    try:
+        from utils import find_element_by_selectors, safe_click
+        
+        # 다음 페이지 버튼 찾기
+        next_button = find_element_by_selectors(
+            driver, SELECTORS['search']['pagination']['next_page']
+        )
+        
+        if next_button:
+            # 버튼이 비활성화되어 있는지 확인
+            if not next_button.is_enabled():
+                return False
+            
+            # 다음 페이지로 스크롤
+            from utils import scroll_to_element
+            scroll_to_element(driver, next_button)
+            time.sleep(WAIT_TIMES['element'])
+            
+            # 버튼 클릭
+            if safe_click(driver, next_button):
+                # 페이지 로딩 대기
+                _wait_for_search_results(driver)
+                _scroll_page(driver)
+                time.sleep(WAIT_TIMES['page_load'])
+                return True
+        
+        # 페이지 번호 링크로 시도
+        try:
+            # 현재 페이지 번호 찾기
+            current_page_elem = find_element_by_selectors(
+                driver, SELECTORS['search']['pagination']['current_page']
+            )
+            
+            current_page_num = 1
+            if current_page_elem:
+                try:
+                    current_page_text = current_page_elem.text.strip()
+                    if current_page_text.isdigit():
+                        current_page_num = int(current_page_text)
+                except:
+                    pass
+            
+            # 다음 페이지 번호 계산
+            page_links = driver.find_elements(
+                By.CSS_SELECTOR, SELECTORS['search']['pagination']['page_numbers'][0]
+            )
+            for link in page_links:
+                try:
+                    link_text = link.text.strip()
+                    if link_text.isdigit():
+                        link_page = int(link_text)
+                        # 현재 페이지보다 큰 첫 번째 링크 클릭
+                        if link_page > current_page_num:
+                            scroll_to_element(driver, link)
+                            time.sleep(WAIT_TIMES['element'])
+                            if safe_click(driver, link):
+                                _wait_for_search_results(driver)
+                                _scroll_page(driver)
+                                time.sleep(WAIT_TIMES['page_load'])
+                                return True
+                except:
+                    continue
+        except:
+            pass
+        
+        return False
+    except Exception as e:
+        logger.debug(f"다음 페이지 이동 실패: {e}")
+        return False
 
 def _log_search_complete(results: List[Dict], min_price: Optional[int]) -> None:
     """검색 완료 로그 출력"""
